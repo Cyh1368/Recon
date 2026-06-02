@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Recon</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>Recon</h1>
+          <p id="status" class="status" role="status"></p>
+        </div>
+      </header>
+
+      <section class="entry-section" aria-label="Add person">
+        <form id="person-form" class="person-form" autocomplete="off">
+          <div class="field field-name">
+            <label for="person-name">Name</label>
+            <input id="person-name" name="name" type="text" required>
+          </div>
+          <div class="field">
+            <label for="met-date">Date</label>
+            <input id="met-date" name="met_date" type="date">
+          </div>
+          <div class="field field-wide field-audio-full">
+            <label>Events</label>
+            <div id="event-picker" class="multi-select" data-context="form"></div>
+          </div>
+          <div class="field field-description">
+            <label for="description">Description</label>
+            <textarea id="description" name="description" rows="4"></textarea>
+          </div>
+          <div class="field">
+            <label for="email">Email</label>
+            <input id="email" name="email" type="email">
+          </div>
+          <div class="field">
+            <label for="linkedin">LinkedIn</label>
+            <input id="linkedin" name="linkedin" type="text">
+          </div>
+          <div class="field">
+            <label for="instagram">Instagram</label>
+            <input id="instagram" name="instagram" type="text">
+          </div>
+          <div class="field field-wide">
+            <label>Audio</label>
+            <div class="audio-recorder">
+              <button id="record-button" type="button" class="secondary-button icon-button" title="Record" aria-label="Record"></button>
+              <button id="stop-button" type="button" class="secondary-button icon-button" title="Stop" aria-label="Stop" disabled></button>
+              <button id="clear-audio-button" type="button" class="secondary-button icon-button" title="Clear" aria-label="Clear" disabled></button>
+              <span id="recording-state" class="recording-state">No audio</span>
+              <audio id="audio-preview" controls hidden></audio>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button id="save-person" type="submit">Save person</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="event-dashboard" aria-label="Events">
+        <div class="section-heading">
+          <h2>Events</h2>
+          <button id="events-open-secondary" type="button" class="secondary-button">Manage</button>
+        </div>
+        <form id="event-form" class="event-form" autocomplete="off">
+          <input id="event-name" name="event" type="text" placeholder="Event name" required>
+          <input id="event-date" name="event_date" type="date" aria-label="Event date">
+          <button type="submit">Add event</button>
+        </form>
+        <div id="event-board" class="event-board"></div>
+      </section>
+
+      <section class="people-section" aria-label="People database">
+        <div class="section-heading">
+          <h2>People</h2>
+          <div class="sort-controls" aria-label="Sort people">
+            <button type="button" class="sort-button active" data-sort="date">Date</button>
+            <button type="button" class="sort-button" data-sort="event">Event</button>
+            <button type="button" class="sort-button" data-sort="name">Name</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th></th>
+                <th>Name</th>
+                <th>Date</th>
+                <th>Description</th>
+                <th>Audio</th>
+                <th>Socials</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="people-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="apollo-dialog" class="apollo-dialog">
+      <div class="dialog-head">
+        <h2>Apollo</h2>
+        <button id="apollo-close" type="button" class="secondary-button">Close</button>
+      </div>
+      <div id="apollo-status" class="dialog-status"></div>
+      <div id="apollo-results" class="apollo-results"></div>
+    </dialog>
+
+    <dialog id="events-dialog" class="events-dialog">
+      <div class="dialog-head">
+        <h2>Events</h2>
+        <button id="events-close" type="button" class="secondary-button">Done</button>
+      </div>
+      <div class="event-modal-body">
+        <div id="event-order-list" class="event-order-list"></div>
+      </div>
+    </dialog>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
