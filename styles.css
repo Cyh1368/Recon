@@ -192,7 +192,7 @@ h3 {
 
 .person-form {
   display: grid;
-  grid-template-columns: minmax(170px, 1.15fr) 160px repeat(3, minmax(145px, 0.8fr));
+  grid-template-columns: minmax(170px, 1.15fr) 160px repeat(5, minmax(125px, 0.8fr));
   gap: 14px;
   align-items: end;
 }
@@ -333,7 +333,7 @@ h3 {
 
 .audio-recorder {
   display: grid;
-  grid-template-columns: repeat(3, auto) minmax(80px, max-content) minmax(240px, 1fr);
+  grid-template-columns: repeat(3, auto) minmax(98px, auto) minmax(80px, max-content) minmax(240px, 1fr);
   gap: 8px;
   align-items: center;
   width: 100%;
@@ -553,7 +553,7 @@ td.audio-cell {
 }
 
 td.social-cell {
-  width: 250px;
+  width: 260px;
 }
 
 td.action-cell {

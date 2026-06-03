@@ -36,6 +36,7 @@ const els = {
   recordButton: document.getElementById("record-button"),
   stopButton: document.getElementById("stop-button"),
   clearAudioButton: document.getElementById("clear-audio-button"),
+  formTranscribeButton: document.getElementById("form-transcribe-button"),
   recordingState: document.getElementById("recording-state"),
   audioPreview: document.getElementById("audio-preview"),
   apolloDialog: document.getElementById("apollo-dialog"),
@@ -77,6 +78,7 @@ function icon(name) {
     mail: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4z"></path><path d="m4 7 8 6 8-6"></path></svg>',
     linkedin: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"></rect><path d="M8 10v7"></path><path d="M8 7.2v.1"></path><path d="M12 17v-4.2a2.5 2.5 0 0 1 5 0V17"></path><path d="M12 10v7"></path></svg>',
     instagram: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="4"></rect><circle cx="12" cy="12" r="3.2"></circle><path d="M16.5 7.8v.1"></path></svg>',
+    phone: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.2a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2z"></path></svg>',
     mic: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path></svg>',
     stop: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1"></rect></svg>',
     clear: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"></path><path d="M18 6 6 18"></path></svg>',
@@ -153,6 +155,7 @@ function socialIconLinks(person) {
     person.email ? {href: `mailto:${person.email}`, iconName: "mail", label: "Email"} : null,
     person.linkedin ? {href: person.linkedin, iconName: "linkedin", label: "LinkedIn"} : null,
     person.instagram ? {href: person.instagram, iconName: "instagram", label: "Instagram"} : null,
+    person.phone ? {href: `tel:${person.phone}`, iconName: "phone", label: "Phone"} : null,
   ].filter(Boolean);
   if (!links.length) return "";
   return `
@@ -346,6 +349,8 @@ function renderPeople() {
             <input data-field="email" type="email" placeholder="Email" value="${escapeHtml(person.email)}">
             <input data-field="linkedin" type="text" placeholder="LinkedIn" value="${escapeHtml(person.linkedin)}">
             <input data-field="instagram" type="text" placeholder="Instagram" value="${escapeHtml(person.instagram)}">
+            <input data-field="discord" type="text" placeholder="Discord" value="${escapeHtml(person.discord || "")}">
+            <input data-field="phone" type="tel" placeholder="Phone number" value="${escapeHtml(person.phone || "")}">
             <div class="cell-actions">
               <button type="button" class="small-button secondary-button" data-action="apollo">Apollo</button>
               ${socialIconLinks(person)}
@@ -416,8 +421,7 @@ function blobToDataUrl(blob) {
 
 async function getMicrophoneStream() {
   if (!window.isSecureContext) {
-    const localUrl = `${window.location.protocol}//127.0.0.1${window.location.port ? `:${window.location.port}` : ""}`;
-    throw new Error(`Microphone recording requires a secure page. Open the app at ${localUrl} or use HTTPS.`);
+    throw new Error("Microphone recording requires HTTPS, or localhost/127.0.0.1 on the same machine.");
   }
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("Microphone recording is not available in this browser.");
@@ -450,6 +454,7 @@ function clearRecordedAudio() {
   els.audioPreview.hidden = true;
   els.audioPreview.removeAttribute("src");
   els.clearAudioButton.disabled = true;
+  els.formTranscribeButton.disabled = true;
   els.recordingState.textContent = "No audio";
   els.recordingState.className = "recording-state";
 }
@@ -472,6 +477,7 @@ async function startRecording() {
       els.audioPreview.src = state.recording.url;
       els.audioPreview.hidden = false;
       els.clearAudioButton.disabled = false;
+      els.formTranscribeButton.disabled = false;
       els.recordingState.textContent = "Audio ready";
       els.recordingState.className = "recording-state";
     });
@@ -536,8 +542,13 @@ function stopTableRecording(personId) {
   }
 }
 
-async function createPerson(event) {
-  event.preventDefault();
+function resetPersonForm() {
+  els.personForm.reset();
+  els.metDate.value = today();
+  clearRecordedAudio();
+}
+
+async function createPersonFromForm() {
   const form = new FormData(els.personForm);
   const payload = {
     name: form.get("name"),
@@ -546,6 +557,8 @@ async function createPerson(event) {
     email: form.get("email"),
     linkedin: form.get("linkedin"),
     instagram: form.get("instagram"),
+    discord: form.get("discord"),
+    phone: form.get("phone"),
     event_ids: selectedFormEvents(),
   };
   if (state.recording.blob) {
@@ -554,19 +567,56 @@ async function createPerson(event) {
       mime_type: state.recording.blob.type || "audio/webm",
     };
   }
+  const data = await api("/api/people", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  state.people.unshift(data.person);
+  return data.person;
+}
+
+async function createPerson(event) {
+  event.preventDefault();
   try {
-    const data = await api("/api/people", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    state.people.unshift(data.person);
-    els.personForm.reset();
-    els.metDate.value = today();
-    clearRecordedAudio();
+    await createPersonFromForm();
+    resetPersonForm();
     renderAll();
     setStatus("Saved.");
   } catch (error) {
     setStatus(error.message, true);
+  }
+}
+
+async function transcribeFormPerson() {
+  if (!state.recording.blob) {
+    setStatus("Record audio before transcribing.", true);
+    return;
+  }
+  if (!els.personForm.reportValidity()) return;
+
+  const button = els.formTranscribeButton;
+  button.disabled = true;
+  button.textContent = "Transcribing";
+  let savedPerson = null;
+  try {
+    savedPerson = await createPersonFromForm();
+    state.expandedPeople.add(savedPerson.id);
+    const data = await api(`/api/people/${encodeURIComponent(savedPerson.id)}/transcribe`, {method: "POST"});
+    await updatePerson(savedPerson.id, {transcript: data.transcript});
+    resetPersonForm();
+    renderAll();
+    setStatus("Saved and transcript generated.");
+  } catch (error) {
+    if (savedPerson) {
+      resetPersonForm();
+      renderAll();
+      setStatus(`Saved, but transcription failed: ${error.message}`, true);
+    } else {
+      setStatus(error.message, true);
+    }
+  } finally {
+    button.textContent = "Transcribe";
+    button.disabled = !state.recording.blob;
   }
 }
 
@@ -704,6 +754,7 @@ async function handleTableClick(event) {
   }
 
   if (action === "transcribe") {
+    state.expandedPeople.add(personId);
     button.disabled = true;
     button.textContent = "Transcribing";
     try {
@@ -953,6 +1004,7 @@ els.eventPicker.addEventListener("change", handleFormEventChange);
 els.recordButton.addEventListener("click", startRecording);
 els.stopButton.addEventListener("click", stopRecording);
 els.clearAudioButton.addEventListener("click", clearRecordedAudio);
+els.formTranscribeButton.addEventListener("click", transcribeFormPerson);
 els.apolloClose.addEventListener("click", () => els.apolloDialog.close());
 els.eventsOpenSecondary.addEventListener("click", openEventsDialog);
 els.eventsClose.addEventListener("click", () => els.eventsDialog.close());

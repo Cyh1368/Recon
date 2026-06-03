@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import sqlite3
+import ssl
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -51,6 +52,8 @@ load_env_file()
 
 HOST = os.getenv("HOST", "127.0.0.1")
 PORT = int(os.getenv("PORT", "8000"))
+SSL_CERT_FILE = os.getenv("SSL_CERT_FILE", "")
+SSL_KEY_FILE = os.getenv("SSL_KEY_FILE", "")
 DB_PATH = Path(os.getenv("RECON_DB_PATH", str(ROOT / "data" / "recon.sqlite3")))
 if not DB_PATH.is_absolute():
     DB_PATH = ROOT / DB_PATH
@@ -117,6 +120,13 @@ def ensure_storage() -> None:
     AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def resolve_optional_path(value: str) -> Path | None:
+    if not value:
+        return None
+    path = Path(value)
+    return path if path.is_absolute() else ROOT / path
+
+
 def connect() -> sqlite3.Connection:
     ensure_storage()
     conn = sqlite3.connect(DB_PATH)
@@ -146,6 +156,8 @@ def init_db() -> None:
                 email TEXT NOT NULL DEFAULT '',
                 linkedin TEXT NOT NULL DEFAULT '',
                 instagram TEXT NOT NULL DEFAULT '',
+                discord TEXT NOT NULL DEFAULT '',
+                phone TEXT NOT NULL DEFAULT '',
                 audio_filename TEXT,
                 audio_mime TEXT,
                 transcript TEXT NOT NULL DEFAULT '',
@@ -163,6 +175,7 @@ def init_db() -> None:
             """
         )
         ensure_event_columns(conn)
+        ensure_person_columns(conn)
 
 
 def ensure_event_columns(conn: sqlite3.Connection) -> None:
@@ -196,6 +209,14 @@ def ensure_event_columns(conn: sqlite3.Connection) -> None:
         "UPDATE events SET color = ? WHERE id = ?",
         [(EVENT_COLORS[index % len(EVENT_COLORS)], row["id"]) for index, row in enumerate(rows)],
     )
+
+
+def ensure_person_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(people)").fetchall()}
+    if "discord" not in columns:
+        conn.execute("ALTER TABLE people ADD COLUMN discord TEXT NOT NULL DEFAULT ''")
+    if "phone" not in columns:
+        conn.execute("ALTER TABLE people ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
 
 
 def clean_text(value: Any, limit: int | None = None) -> str:
@@ -287,6 +308,8 @@ def person_payload(conn: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]
         "email": row["email"],
         "linkedin": row["linkedin"],
         "instagram": row["instagram"],
+        "discord": row["discord"],
+        "phone": row["phone"],
         "audio_url": f"/media/audio/{audio_filename}" if audio_filename else "",
         "audio_mime": row["audio_mime"] or "",
         "transcript": row["transcript"],
@@ -380,10 +403,10 @@ def create_person(payload: dict[str, Any]) -> dict[str, Any]:
         conn.execute(
             """
             INSERT INTO people (
-                id, name, description, met_date, email, linkedin, instagram,
+                id, name, description, met_date, email, linkedin, instagram, discord, phone,
                 audio_filename, audio_mime, transcript, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 person_id,
@@ -393,8 +416,11 @@ def create_person(payload: dict[str, Any]) -> dict[str, Any]:
                 normalize_url(payload.get("email"), "email"),
                 normalize_url(payload.get("linkedin"), "linkedin"),
                 normalize_url(payload.get("instagram"), "instagram"),
+                clean_text(payload.get("discord"), 500),
+                clean_text(payload.get("phone"), 80),
                 audio_filename,
                 audio_mime,
+                clean_text(payload.get("transcript"), 12000),
                 now,
                 now,
             ),
@@ -412,6 +438,8 @@ def update_person(person_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         "email": lambda value: normalize_url(value, "email"),
         "linkedin": lambda value: normalize_url(value, "linkedin"),
         "instagram": lambda value: normalize_url(value, "instagram"),
+        "discord": lambda value: clean_text(value, 500),
+        "phone": lambda value: clean_text(value, 80),
         "transcript": lambda value: clean_text(value, 12000),
     }
     updates: list[str] = []
@@ -868,7 +896,17 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     init_db()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"Recon running at http://{HOST}:{PORT}")
+    cert_file = resolve_optional_path(SSL_CERT_FILE)
+    key_file = resolve_optional_path(SSL_KEY_FILE)
+    scheme = "http"
+    if cert_file or key_file:
+        if not cert_file or not key_file:
+            raise RuntimeError("SSL_CERT_FILE and SSL_KEY_FILE must both be set to enable HTTPS.")
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(cert_file, key_file)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        scheme = "https"
+    print(f"Recon running at {scheme}://{HOST}:{PORT}")
     server.serve_forever()
 
 
