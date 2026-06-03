@@ -414,6 +414,20 @@ function blobToDataUrl(blob) {
   });
 }
 
+async function getMicrophoneStream() {
+  if (!window.isSecureContext) {
+    const localUrl = `${window.location.protocol}//127.0.0.1${window.location.port ? `:${window.location.port}` : ""}`;
+    throw new Error(`Microphone recording requires a secure page. Open the app at ${localUrl} or use HTTPS.`);
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error("Microphone recording is not available in this browser.");
+  }
+  if (typeof MediaRecorder === "undefined") {
+    throw new Error("Audio recording is not supported in this browser.");
+  }
+  return navigator.mediaDevices.getUserMedia({audio: true});
+}
+
 async function attachAudioBlob(personId, blob) {
   const person = personById(personId);
   if (!person) return;
@@ -442,7 +456,7 @@ function clearRecordedAudio() {
 
 async function startRecording() {
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    const stream = await getMicrophoneStream();
     clearRecordedAudio();
     const recorder = new MediaRecorder(stream);
     state.recording.mediaRecorder = recorder;
@@ -483,8 +497,10 @@ async function startTableRecording(personId, row) {
   if (state.tableRecording.mediaRecorder && state.tableRecording.mediaRecorder.state !== "inactive") {
     state.tableRecording.mediaRecorder.stop();
   }
+  const recordButton = row.querySelector('[data-action="record-table-audio"]');
+  const stopButton = row.querySelector('[data-action="stop-table-audio"]');
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    const stream = await getMicrophoneStream();
     const recorder = new MediaRecorder(stream);
     state.tableRecording = {personId, mediaRecorder: recorder, chunks: []};
     recorder.addEventListener("dataavailable", (event) => {
@@ -503,10 +519,12 @@ async function startTableRecording(personId, row) {
       }
     });
     recorder.start();
-    row.querySelector('[data-action="record-table-audio"]').disabled = true;
-    row.querySelector('[data-action="stop-table-audio"]').disabled = false;
+    recordButton.disabled = true;
+    stopButton.disabled = false;
     setStatus("Recording table audio...");
   } catch (error) {
+    recordButton.disabled = false;
+    stopButton.disabled = true;
     setStatus(error.message, true);
   }
 }
