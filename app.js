@@ -234,10 +234,10 @@ function renderMultiSelect({id, selectedIds = new Set(), personId = "", context 
   `;
 }
 
-function renderFormEventPicker() {
+function renderFormEventPicker(selectedIds = new Set(selectedFormEvents())) {
   els.eventPicker.innerHTML = renderMultiSelect({
     id: "person-event-picker",
-    selectedIds: new Set(),
+    selectedIds,
     context: "form",
   });
 }
@@ -543,8 +543,11 @@ function stopTableRecording(personId) {
 }
 
 function resetPersonForm() {
+  const metDate = els.metDate.value;
+  const selectedIds = new Set(selectedFormEvents());
   els.personForm.reset();
-  els.metDate.value = today();
+  els.metDate.value = metDate || today();
+  renderFormEventPicker(selectedIds);
   clearRecordedAudio();
 }
 
