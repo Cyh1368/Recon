@@ -32,6 +32,8 @@
           <div class="field field-description">
             <label for="description">Description</label>
             <textarea id="description" name="description" rows="4"></textarea>
+            <div id="form-transcript-box" class="transcript-box" hidden></div>
+            <button id="append-form-transcript" type="button" class="small-button secondary-button" hidden>Append transcript</button>
           </div>
           <div class="field">
             <input id="email" name="email" type="email" placeholder="Email" aria-label="Email">
@@ -123,6 +125,17 @@
       <div class="event-modal-body">
         <div id="event-order-list" class="event-order-list"></div>
       </div>
+    </dialog>
+
+    <dialog id="event-people-dialog" class="event-people-dialog">
+      <div class="dialog-head">
+        <div>
+          <h2 id="event-people-title"></h2>
+          <div id="event-people-meta" class="dialog-subtitle"></div>
+        </div>
+        <button id="event-people-close" type="button" class="secondary-button">Close</button>
+      </div>
+      <div id="event-people-list" class="event-people-list"></div>
     </dialog>
 
     <script src="/app.js"></script>

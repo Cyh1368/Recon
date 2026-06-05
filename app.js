@@ -17,6 +17,11 @@ const state = {
   dragEventId: "",
   orderDirty: false,
   expandedPeople: new Set(),
+  formTranscript: "",
+  eventPeopleEventId: "",
+  eventPeopleExpandedIds: new Set(),
+  eventPeopleMessages: {},
+  eventPeopleGeneratingId: "",
 };
 
 const els = {
@@ -30,6 +35,11 @@ const els = {
   eventOrderList: document.getElementById("event-order-list"),
   eventPicker: document.getElementById("event-picker"),
   eventBoard: document.getElementById("event-board"),
+  eventPeopleDialog: document.getElementById("event-people-dialog"),
+  eventPeopleClose: document.getElementById("event-people-close"),
+  eventPeopleTitle: document.getElementById("event-people-title"),
+  eventPeopleMeta: document.getElementById("event-people-meta"),
+  eventPeopleList: document.getElementById("event-people-list"),
   personForm: document.getElementById("person-form"),
   peopleBody: document.getElementById("people-body"),
   metDate: document.getElementById("met-date"),
@@ -37,6 +47,9 @@ const els = {
   stopButton: document.getElementById("stop-button"),
   clearAudioButton: document.getElementById("clear-audio-button"),
   formTranscribeButton: document.getElementById("form-transcribe-button"),
+  description: document.getElementById("description"),
+  formTranscriptBox: document.getElementById("form-transcript-box"),
+  appendFormTranscriptButton: document.getElementById("append-form-transcript"),
   recordingState: document.getElementById("recording-state"),
   audioPreview: document.getElementById("audio-preview"),
   apolloDialog: document.getElementById("apollo-dialog"),
@@ -126,10 +139,6 @@ function dateLabel(value) {
   return year && month && day ? `${month}/${day}/${year}` : value;
 }
 
-function eventNames(person) {
-  return (person.events || []).map((event) => event.name).join(", ");
-}
-
 function eventIds(person) {
   return new Set((person.events || []).map((event) => event.id));
 }
@@ -148,6 +157,12 @@ function selectedEvents(selectedIds) {
 
 function personById(personId) {
   return state.people.find((person) => person.id === personId);
+}
+
+function peopleForEvent(eventId) {
+  return state.people
+    .filter((person) => eventIds(person).has(eventId))
+    .sort((a, b) => a.name.localeCompare(b.name) || b.met_date.localeCompare(a.met_date));
 }
 
 function socialIconLinks(person) {
@@ -175,17 +190,44 @@ function rowPersonId(target) {
 
 function sortedPeople() {
   const rows = [...state.people];
+  const eventPositions = new Map(state.events.map((event, index) => [event.id, index]));
+  const firstEventPosition = (person) => {
+    const positions = (person.events || [])
+      .map((event) => eventPositions.get(event.id))
+      .filter((position) => Number.isInteger(position));
+    return positions.length ? Math.min(...positions) : Number.MAX_SAFE_INTEGER;
+  };
   rows.sort((a, b) => {
     if (state.sort === "name") {
       return a.name.localeCompare(b.name);
     }
     if (state.sort === "event") {
-      const eventCompare = eventNames(a).localeCompare(eventNames(b));
-      return eventCompare || b.met_date.localeCompare(a.met_date);
+      const eventCompare = firstEventPosition(a) - firstEventPosition(b);
+      return eventCompare || b.met_date.localeCompare(a.met_date) || a.name.localeCompare(b.name);
     }
     return b.met_date.localeCompare(a.met_date) || a.name.localeCompare(b.name);
   });
   return rows;
+}
+
+function descriptionWithTranscript(description, transcript) {
+  const separator = description.trim() ? "\n\n" : "";
+  return `${description}${separator}${transcript}`;
+}
+
+function updateFormTranscriptAppendButton() {
+  if (!els.appendFormTranscriptButton) return;
+  const alreadyAppended = state.formTranscript && els.description.value.includes(state.formTranscript);
+  els.appendFormTranscriptButton.hidden = !state.formTranscript || alreadyAppended;
+}
+
+function setFormTranscript(transcript) {
+  state.formTranscript = transcript || "";
+  if (els.formTranscriptBox) {
+    els.formTranscriptBox.textContent = state.formTranscript;
+    els.formTranscriptBox.hidden = !state.formTranscript;
+  }
+  updateFormTranscriptAppendButton();
 }
 
 function selectedEventLabel(selectedIds) {
@@ -250,7 +292,7 @@ function renderEventBoard() {
   els.eventBoard.innerHTML = state.events.slice(0, 3).map((event) => {
     const people = state.people.filter((person) => eventIds(person).has(event.id));
     return `
-      <article class="event-card" style="--event-color: ${escapeHtml(eventColor(event))}">
+      <article class="event-card" data-event-id="${escapeHtml(event.id)}" role="button" tabindex="0" aria-label="${escapeHtml(event.name)} people" style="--event-color: ${escapeHtml(eventColor(event))}">
         <div class="event-card-head">
           <div>
             <h3>${escapeHtml(event.name)}</h3>
@@ -268,6 +310,48 @@ function renderEventBoard() {
           ${people.length > 6 ? `<div class="muted">${people.length - 6} more</div>` : ""}
         </div>
       </article>
+    `;
+  }).join("");
+}
+
+function renderEventPeopleDialog() {
+  const event = eventById(state.eventPeopleEventId);
+  if (!event) return;
+  const people = peopleForEvent(event.id);
+  els.eventPeopleTitle.textContent = event.name;
+  els.eventPeopleMeta.textContent = `${dateLabel(event.event_date)} - ${people.length} ${people.length === 1 ? "person" : "people"}`;
+  if (!people.length) {
+    els.eventPeopleList.innerHTML = '<div class="empty-panel">No people tagged</div>';
+    return;
+  }
+  els.eventPeopleList.innerHTML = people.map((person) => {
+    const expanded = state.eventPeopleExpandedIds.has(person.id);
+    const message = state.eventPeopleMessages[person.id] || "";
+    const generating = state.eventPeopleGeneratingId === person.id;
+    const name = person.linkedin
+      ? `<a class="event-person-name" href="${escapeHtml(person.linkedin)}" target="_blank" rel="noopener noreferrer">${escapeHtml(person.name)}</a>`
+      : `<span class="event-person-name">${escapeHtml(person.name)}</span>`;
+    return `
+      <div class="event-people-row ${expanded ? "expanded" : "collapsed"}" data-person-id="${escapeHtml(person.id)}">
+        <div class="event-people-row-main">
+          <button type="button" class="row-toggle secondary-button" data-action="toggle-event-person" aria-label="${expanded ? "Collapse person" : "Expand person"}">
+            ${expanded ? icon("chevronDown") : icon("chevronRight")}
+          </button>
+          ${name}
+        </div>
+        ${expanded ? `
+          <div class="event-person-expanded">
+            <div class="event-person-description">${escapeHtml(person.description || "No description")}</div>
+            <div class="linkedin-message-actions">
+              <button type="button" class="small-button secondary-button" data-action="generate-linkedin-message" data-person-id="${escapeHtml(person.id)}" ${generating ? "disabled" : ""}>
+                ${generating ? "Generating" : message ? "Regenerate LinkedIn message" : "Generate LinkedIn message"}
+              </button>
+              ${message ? `<button type="button" class="small-button secondary-button" data-action="copy-linkedin-message" data-person-id="${escapeHtml(person.id)}">Copy</button>` : ""}
+            </div>
+            ${message ? `<div class="linkedin-message-box">${escapeHtml(message)}</div>` : ""}
+          </div>
+        ` : ""}
+      </div>
     `;
   }).join("");
 }
@@ -371,6 +455,7 @@ function renderAll() {
   renderEventBoard();
   renderPeople();
   if (els.eventsDialog.open) renderEventsDialog();
+  if (els.eventPeopleDialog.open) renderEventPeopleDialog();
 }
 
 async function loadAll() {
@@ -457,6 +542,7 @@ function clearRecordedAudio() {
   els.formTranscribeButton.disabled = true;
   els.recordingState.textContent = "No audio";
   els.recordingState.className = "recording-state";
+  setFormTranscript("");
 }
 
 async function startRecording() {
@@ -564,6 +650,9 @@ async function createPersonFromForm() {
     phone: form.get("phone"),
     event_ids: selectedFormEvents(),
   };
+  if (state.formTranscript) {
+    payload.transcript = state.formTranscript;
+  }
   if (state.recording.blob) {
     payload.audio = {
       data_url: await blobToDataUrl(state.recording.blob),
@@ -595,28 +684,25 @@ async function transcribeFormPerson() {
     setStatus("Record audio before transcribing.", true);
     return;
   }
-  if (!els.personForm.reportValidity()) return;
 
   const button = els.formTranscribeButton;
   button.disabled = true;
   button.textContent = "Transcribing";
-  let savedPerson = null;
   try {
-    savedPerson = await createPersonFromForm();
-    state.expandedPeople.add(savedPerson.id);
-    const data = await api(`/api/people/${encodeURIComponent(savedPerson.id)}/transcribe`, {method: "POST"});
-    await updatePerson(savedPerson.id, {transcript: data.transcript});
-    resetPersonForm();
-    renderAll();
-    setStatus("Saved and transcript generated.");
+    const dataUrl = await blobToDataUrl(state.recording.blob);
+    const data = await api("/api/transcribe", {
+      method: "POST",
+      body: JSON.stringify({
+        audio: {
+          data_url: dataUrl,
+          mime_type: state.recording.blob.type || "audio/webm",
+        },
+      }),
+    });
+    setFormTranscript(data.transcript);
+    setStatus("Transcript generated.");
   } catch (error) {
-    if (savedPerson) {
-      resetPersonForm();
-      renderAll();
-      setStatus(`Saved, but transcription failed: ${error.message}`, true);
-    } else {
-      setStatus(error.message, true);
-    }
+    setStatus(error.message, true);
   } finally {
     button.textContent = "Transcribe";
     button.disabled = !state.recording.blob;
@@ -774,8 +860,7 @@ async function handleTableClick(event) {
   }
 
   if (action === "append-transcript") {
-    const separator = person.description.trim() ? "\n\n" : "";
-    await updatePerson(personId, {description: `${person.description}${separator}${person.transcript}`});
+    await updatePerson(personId, {description: descriptionWithTranscript(person.description, person.transcript)});
     setStatus("Transcript appended.");
     return;
   }
@@ -842,6 +927,109 @@ async function handleFormEventChange(event) {
 function openEventsDialog() {
   renderEventsDialog();
   if (!els.eventsDialog.open) els.eventsDialog.showModal();
+}
+
+function openEventPeopleDialog(eventId) {
+  state.eventPeopleEventId = eventId;
+  state.eventPeopleExpandedIds.clear();
+  state.eventPeopleMessages = {};
+  state.eventPeopleGeneratingId = "";
+  renderEventPeopleDialog();
+  if (!els.eventPeopleDialog.open) els.eventPeopleDialog.showModal();
+}
+
+function closeEventPeopleDialog() {
+  els.eventPeopleDialog.close();
+  state.eventPeopleEventId = "";
+  state.eventPeopleExpandedIds.clear();
+  state.eventPeopleMessages = {};
+  state.eventPeopleGeneratingId = "";
+}
+
+function toggleEventPeopleRow(personId) {
+  if (state.eventPeopleExpandedIds.has(personId)) {
+    state.eventPeopleExpandedIds.delete(personId);
+  } else {
+    state.eventPeopleExpandedIds.add(personId);
+  }
+  renderEventPeopleDialog();
+}
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
+}
+
+async function generateLinkedInMessage(personId) {
+  state.eventPeopleGeneratingId = personId;
+  renderEventPeopleDialog();
+  try {
+    const data = await api("/api/linkedin-message", {
+      method: "POST",
+      body: JSON.stringify({
+        person_id: personId,
+        event_id: state.eventPeopleEventId,
+      }),
+    });
+    state.eventPeopleMessages = {
+      ...state.eventPeopleMessages,
+      [personId]: data.message || "",
+    };
+    setStatus("LinkedIn message generated.");
+  } catch (error) {
+    setStatus(error.message, true);
+  } finally {
+    state.eventPeopleGeneratingId = "";
+    renderEventPeopleDialog();
+  }
+}
+
+function handleEventBoardClick(event) {
+  const card = event.target.closest(".event-card[data-event-id]");
+  if (!card) return;
+  openEventPeopleDialog(card.dataset.eventId);
+}
+
+function handleEventBoardKeydown(event) {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const card = event.target.closest(".event-card[data-event-id]");
+  if (!card) return;
+  event.preventDefault();
+  openEventPeopleDialog(card.dataset.eventId);
+}
+
+async function handleEventPeopleClick(event) {
+  const actionButton = event.target.closest("button[data-action]");
+  if (actionButton?.dataset.action === "generate-linkedin-message") {
+    await generateLinkedInMessage(actionButton.dataset.personId);
+    return;
+  }
+  if (actionButton?.dataset.action === "copy-linkedin-message") {
+    const message = state.eventPeopleMessages[actionButton.dataset.personId] || "";
+    if (!message) return;
+    try {
+      await copyText(message);
+      setStatus("LinkedIn message copied.");
+    } catch (error) {
+      setStatus(error.message, true);
+    }
+    return;
+  }
+  if (event.target.closest("a")) return;
+  const row = event.target.closest(".event-people-row-main")?.closest(".event-people-row");
+  if (!row) return;
+  toggleEventPeopleRow(row.dataset.personId);
 }
 
 async function handleEventsDialogChange(event) {
@@ -1004,13 +1192,30 @@ els.personForm.addEventListener("submit", createPerson);
 els.peopleBody.addEventListener("change", handleTableChange);
 els.peopleBody.addEventListener("click", handleTableClick);
 els.eventPicker.addEventListener("change", handleFormEventChange);
+els.eventBoard.addEventListener("click", handleEventBoardClick);
+els.eventBoard.addEventListener("keydown", handleEventBoardKeydown);
 els.recordButton.addEventListener("click", startRecording);
 els.stopButton.addEventListener("click", stopRecording);
 els.clearAudioButton.addEventListener("click", clearRecordedAudio);
 els.formTranscribeButton.addEventListener("click", transcribeFormPerson);
+els.appendFormTranscriptButton.addEventListener("click", () => {
+  if (!state.formTranscript) return;
+  els.description.value = descriptionWithTranscript(els.description.value, state.formTranscript);
+  updateFormTranscriptAppendButton();
+  setStatus("Transcript appended.");
+});
+els.description.addEventListener("input", updateFormTranscriptAppendButton);
 els.apolloClose.addEventListener("click", () => els.apolloDialog.close());
 els.eventsOpenSecondary.addEventListener("click", openEventsDialog);
 els.eventsClose.addEventListener("click", () => els.eventsDialog.close());
+els.eventPeopleClose.addEventListener("click", closeEventPeopleDialog);
+els.eventPeopleDialog.addEventListener("close", () => {
+  state.eventPeopleEventId = "";
+  state.eventPeopleExpandedIds.clear();
+  state.eventPeopleMessages = {};
+  state.eventPeopleGeneratingId = "";
+});
+els.eventPeopleList.addEventListener("click", handleEventPeopleClick);
 els.eventOrderList.addEventListener("change", handleEventsDialogChange);
 els.eventOrderList.addEventListener("click", handleEventsDialogClick);
 els.eventOrderList.addEventListener("dragstart", handleEventDragStart);

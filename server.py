@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import datetime as dt
+import io
 import json
 import mimetypes
 import os
@@ -75,6 +76,12 @@ OPENAI_TRANSCRIPTION_URL = os.getenv(
 )
 OPENAI_TRANSCRIPTION_MODEL = os.getenv("OPENAI_TRANSCRIPTION_MODEL", "whisper-1")
 OPENAI_TRANSCRIPTION_LANGUAGE = os.getenv("OPENAI_TRANSCRIPTION_LANGUAGE", "")
+
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+ANTHROPIC_MESSAGES_URL = os.getenv("ANTHROPIC_MESSAGES_URL", "https://api.anthropic.com/v1/messages")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+ANTHROPIC_VERSION = os.getenv("ANTHROPIC_VERSION", "2023-06-01")
+ANTHROPIC_REQUEST_TIMEOUT = float(os.getenv("ANTHROPIC_REQUEST_TIMEOUT", "45"))
 
 STATIC_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -374,12 +381,12 @@ def audio_extension(mime_type: str) -> str:
     }.get(mime_type.split(";")[0].lower(), ".webm")
 
 
-def store_audio(audio: dict[str, Any] | None, person_id: str) -> tuple[str | None, str | None]:
+def decode_audio_payload(audio: dict[str, Any] | None) -> tuple[bytes, str] | None:
     if not audio:
-        return None, None
+        return None
     data_url = clean_text(audio.get("data_url"))
     if not data_url:
-        return None, None
+        return None
     match = re.fullmatch(r"data:([^;,]+)(?:;[^,]*)?;base64,(.*)", data_url, re.DOTALL)
     if not match:
         raise ValueError("Audio must be a base64 data URL.")
@@ -387,6 +394,14 @@ def store_audio(audio: dict[str, Any] | None, person_id: str) -> tuple[str | Non
     raw = base64.b64decode(match.group(2), validate=True)
     if len(raw) > MAX_UPLOAD_BYTES:
         raise ValueError("Audio upload is larger than RECON_MAX_UPLOAD_MB.")
+    return raw, mime_type
+
+
+def store_audio(audio: dict[str, Any] | None, person_id: str) -> tuple[str | None, str | None]:
+    decoded = decode_audio_payload(audio)
+    if not decoded:
+        return None, None
+    raw, mime_type = decoded
     filename = f"{person_id}-{uuid.uuid4().hex}{audio_extension(mime_type)}"
     (AUDIO_DIR / filename).write_bytes(raw)
     return filename, mime_type
@@ -714,10 +729,163 @@ def apollo_enrich(payload: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def transcribe_person_audio(person_id: str) -> dict[str, str]:
+def first_name(full_name: str) -> str:
+    name = clean_text(full_name, 160)
+    return name.split()[0] if name.split() else name
+
+
+def event_day_description(event_date: str) -> str:
+    try:
+        event_day = dt.date.fromisoformat(event_date)
+    except ValueError:
+        return "recently"
+    today = dt.date.today()
+    weekday = event_day.strftime("%A")
+    current_week_start = today - dt.timedelta(days=today.weekday())
+    event_week_start = event_day - dt.timedelta(days=event_day.weekday())
+    if event_week_start == current_week_start:
+        return f"this {weekday}"
+    if event_week_start == current_week_start - dt.timedelta(days=7):
+        return "last week"
+    if event_day.year == today.year and event_day.month == today.month:
+        return "this month"
+    previous_month = today.replace(day=1) - dt.timedelta(days=1)
+    if event_day.year == previous_month.year and event_day.month == previous_month.month:
+        return "last month"
+    if event_day.year == today.year:
+        return "earlier this year"
+    return "a while back"
+
+
+def extract_anthropic_text(payload: dict[str, Any]) -> str:
+    pieces: list[str] = []
+    for block in payload.get("content") or []:
+        if isinstance(block, dict) and block.get("type") == "text":
+            pieces.append(clean_text(block.get("text")))
+    return " ".join(" ".join(pieces).split())
+
+
+def generate_linkedin_message(payload: dict[str, Any]) -> dict[str, str]:
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY is not set.")
+    person_id = clean_text(payload.get("person_id"), 80)
+    event_id = clean_text(payload.get("event_id"), 80)
+    if not person_id or not event_id:
+        raise ValueError("person_id and event_id are required.")
+
+    with connect() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                p.name AS person_name,
+                p.description AS person_description,
+                e.name AS event_name,
+                e.event_date AS event_date
+            FROM people p
+            JOIN person_events pe ON pe.person_id = p.id
+            JOIN events e ON e.id = pe.event_id
+            WHERE p.id = ? AND e.id = ?
+            """,
+            (person_id, event_id),
+        ).fetchone()
+    if not row:
+        raise KeyError("Person/event pairing not found.")
+
+    recipient_first_name = first_name(row["person_name"])
+    timing = event_day_description(row["event_date"])
+    prompt = {
+        "recipient_full_name": row["person_name"],
+        "recipient_first_name": recipient_first_name,
+        "event_name": row["event_name"],
+        "event_date": row["event_date"],
+        "event_timing_phrase": timing,
+        "notes_about_person": row["person_description"],
+        "opening_sentence": (
+            f"Hey {recipient_first_name}, it was great meeting you at "
+            f"{row['event_name']} {timing}."
+        ),
+    }
+    http = require_requests()
+    response = http.post(
+        ANTHROPIC_MESSAGES_URL,
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": ANTHROPIC_VERSION,
+        },
+        json={
+            "model": ANTHROPIC_MODEL,
+            "max_tokens": 700,
+            "temperature": 0.7,
+            "system": (
+                "You write warm LinkedIn follow-up messages from a student's first-person perspective. "
+                "Return only the final message text. It must be exactly one paragraph, with no markdown, "
+                "no labels, and no line breaks. Use first person singular I. Sound encouraging, grateful, "
+                "and specific. Frame the interaction as guidance and ideas that helped the student grow. "
+                "Do not invent facts, product names, employers, or advice not supported by the notes."
+            ),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        "Write one LinkedIn message using this context:\n"
+                        f"{json.dumps(prompt, ensure_ascii=True)}\n\n"
+                        "Requirements:\n"
+                        "- Start exactly with the opening_sentence.\n"
+                        "- Include a sentence like 'I was surprised/happy/excited to learn...' that covers every meaningful detail from notes_about_person.\n"
+                        "- If the notes include advice, guidance, expertise, or an idea, include 'I really appreciate learning from you about ...' or a natural equivalent.\n"
+                        "- If the notes include a product, startup, project, event, company, or initiative, include a short encouraging good-luck sentence for it.\n"
+                        "- Omit any optional sentence that is not supported by the notes.\n"
+                        "- Use first person I, not we. Make it sound like I received useful guidance as a student."
+                    ),
+                }
+            ],
+        },
+        timeout=ANTHROPIC_REQUEST_TIMEOUT,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Claude request failed: {response.status_code} {response.text[:300]}")
+    message = extract_anthropic_text(response.json())
+    if not message:
+        raise RuntimeError("Claude response did not include message text.")
+    return {"message": clean_text(message, 3000)}
+
+
+def request_transcription(audio_file: Any, filename: str, mime_type: str) -> str:
     if not OPENAI_API_KEY:
         raise RuntimeError("OPENAI_API_KEY is not set.")
     http = require_requests()
+    data = {"model": OPENAI_TRANSCRIPTION_MODEL}
+    if OPENAI_TRANSCRIPTION_LANGUAGE:
+        data["language"] = OPENAI_TRANSCRIPTION_LANGUAGE
+    response = http.post(
+        OPENAI_TRANSCRIPTION_URL,
+        headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+        data=data,
+        files={"file": (filename, audio_file, mime_type or "audio/webm")},
+        timeout=180,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Transcription request failed: {response.status_code} {response.text[:300]}")
+    payload = response.json()
+    transcript = clean_text(payload.get("text"), 12000)
+    if not transcript:
+        raise RuntimeError("Transcription response did not include text.")
+    return transcript
+
+
+def transcribe_audio_payload(payload: dict[str, Any]) -> dict[str, str]:
+    decoded = decode_audio_payload(payload.get("audio"))
+    if not decoded:
+        raise ValueError("Audio is required.")
+    raw, mime_type = decoded
+    filename = f"recording{audio_extension(mime_type)}"
+    with io.BytesIO(raw) as audio_file:
+        transcript = request_transcription(audio_file, filename, mime_type)
+    return {"transcript": transcript}
+
+
+def transcribe_person_audio(person_id: str) -> dict[str, str]:
     with connect() as conn:
         row = conn.execute("SELECT audio_filename, audio_mime FROM people WHERE id = ?", (person_id,)).fetchone()
         if not row:
@@ -727,23 +895,8 @@ def transcribe_person_audio(person_id: str) -> dict[str, str]:
         path = AUDIO_DIR / row["audio_filename"]
         if not path.exists():
             raise ValueError("Audio file is missing.")
-        data = {"model": OPENAI_TRANSCRIPTION_MODEL}
-        if OPENAI_TRANSCRIPTION_LANGUAGE:
-            data["language"] = OPENAI_TRANSCRIPTION_LANGUAGE
         with path.open("rb") as audio_file:
-            response = http.post(
-                OPENAI_TRANSCRIPTION_URL,
-                headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                data=data,
-                files={"file": (path.name, audio_file, row["audio_mime"] or "audio/webm")},
-                timeout=180,
-            )
-        if response.status_code >= 400:
-            raise RuntimeError(f"Transcription request failed: {response.status_code} {response.text[:300]}")
-        payload = response.json()
-        transcript = clean_text(payload.get("text"), 12000)
-        if not transcript:
-            raise RuntimeError("Transcription response did not include text.")
+            transcript = request_transcription(audio_file, path.name, row["audio_mime"] or "audio/webm")
         conn.execute(
             "UPDATE people SET transcript = ?, updated_at = ? WHERE id = ?",
             (transcript, utc_now(), person_id),
@@ -781,6 +934,9 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/events":
                 self.send_json({"event": create_event(request_json(self))}, HTTPStatus.CREATED)
                 return
+            if parsed.path == "/api/transcribe":
+                self.send_json(transcribe_audio_payload(request_json(self)))
+                return
             match = re.fullmatch(r"/api/people/([^/]+)/transcribe", parsed.path)
             if match:
                 self.send_json(transcribe_person_audio(unquote(match.group(1))))
@@ -791,6 +947,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/apollo/enrich":
                 self.send_json(apollo_enrich(request_json(self)))
+                return
+            if parsed.path == "/api/linkedin-message":
+                self.send_json(generate_linkedin_message(request_json(self)))
                 return
             self.send_json({"error": "Not found."}, HTTPStatus.NOT_FOUND)
         except Exception as exc:

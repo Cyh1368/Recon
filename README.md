@@ -14,7 +14,7 @@ python3 server.py
 
 Then open `http://127.0.0.1:8000`.
 
-The app can run without API keys for local note-taking. Apollo lookup requires `APOLLO_API_KEY`, and audio transcription requires `OPENAI_API_KEY`.
+The app can run without API keys for local note-taking. Apollo lookup requires `APOLLO_API_KEY`, audio transcription requires `OPENAI_API_KEY`, and LinkedIn message generation requires `ANTHROPIC_API_KEY`.
 
 ## Environment Variables
 
@@ -34,6 +34,11 @@ Copy `.env.example` to `.env` and fill in the keys you need:
 - `OPENAI_TRANSCRIPTION_URL`: OpenAI-compatible transcription endpoint.
 - `OPENAI_TRANSCRIPTION_MODEL`: transcription model.
 - `OPENAI_TRANSCRIPTION_LANGUAGE`: optional language hint.
+- `ANTHROPIC_API_KEY`: required for LinkedIn message generation.
+- `ANTHROPIC_MESSAGES_URL`: Anthropic Messages API endpoint.
+- `ANTHROPIC_MODEL`: Claude model for LinkedIn messages.
+- `ANTHROPIC_VERSION`: Anthropic API version header.
+- `ANTHROPIC_REQUEST_TIMEOUT`: Claude request timeout in seconds.
 
 ## Data
 

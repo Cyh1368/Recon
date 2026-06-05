@@ -394,12 +394,15 @@ h3 {
   background: var(--panel);
   border-top: 4px solid var(--event-color);
   box-shadow: var(--shadow);
+  cursor: pointer;
   transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease;
 }
 
-.event-card:hover {
+.event-card:hover,
+.event-card:focus-visible {
   border-color: color-mix(in srgb, var(--event-color) 58%, transparent);
   box-shadow: 0 24px 58px rgba(0, 0, 0, 0.38), 0 0 0 3px color-mix(in srgb, var(--event-color) 18%, transparent);
+  outline: none;
   transform: translateY(-3px);
 }
 
@@ -710,7 +713,8 @@ tr.collapsed .selected-event-tags {
 }
 
 .apollo-dialog,
-.events-dialog {
+.events-dialog,
+.event-people-dialog {
   width: min(820px, calc(100% - 28px));
   border: 1px solid rgba(71, 194, 177, 0.24);
   border-radius: 8px;
@@ -721,7 +725,8 @@ tr.collapsed .selected-event-tags {
 }
 
 .apollo-dialog::backdrop,
-.events-dialog::backdrop {
+.events-dialog::backdrop,
+.event-people-dialog::backdrop {
   background: rgba(0, 0, 0, 0.58);
 }
 
@@ -740,6 +745,13 @@ tr.collapsed .selected-event-tags {
   font-weight: 700;
 }
 
+.dialog-subtitle {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
 .apollo-results,
 .event-modal-body {
   display: grid;
@@ -747,6 +759,72 @@ tr.collapsed .selected-event-tags {
   max-height: 62vh;
   overflow: auto;
   padding: 14px;
+}
+
+.event-people-list {
+  display: grid;
+  gap: 8px;
+  max-height: 62vh;
+  overflow: auto;
+  padding: 14px;
+}
+
+.event-people-row {
+  border: 1px solid rgba(155, 163, 175, 0.16);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.event-people-row-main {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  cursor: pointer;
+  padding: 10px;
+}
+
+.event-person-name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-weight: 800;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+a.event-person-name:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.event-person-expanded {
+  border-top: 1px solid rgba(155, 163, 175, 0.14);
+  display: grid;
+  gap: 10px;
+  padding: 0 10px 12px 52px;
+}
+
+.event-person-description {
+  color: var(--muted);
+  line-height: 1.45;
+  padding-top: 10px;
+  white-space: pre-wrap;
+}
+
+.linkedin-message-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.linkedin-message-box {
+  border-left: 3px solid rgba(71, 194, 177, 0.5);
+  color: var(--ink);
+  line-height: 1.45;
+  padding-left: 10px;
+  white-space: pre-wrap;
 }
 
 .candidate {
