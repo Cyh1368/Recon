@@ -175,6 +175,8 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS person_events (
                 person_id TEXT NOT NULL,
                 event_id TEXT NOT NULL,
+                follow_up_enabled INTEGER NOT NULL DEFAULT 0,
+                follow_up_dates TEXT NOT NULL DEFAULT '[]',
                 PRIMARY KEY (person_id, event_id),
                 FOREIGN KEY (person_id) REFERENCES people(id) ON DELETE CASCADE,
                 FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE
@@ -183,6 +185,7 @@ def init_db() -> None:
         )
         ensure_event_columns(conn)
         ensure_person_columns(conn)
+        ensure_person_event_columns(conn)
 
 
 def ensure_event_columns(conn: sqlite3.Connection) -> None:
@@ -226,6 +229,14 @@ def ensure_person_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE people ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
 
 
+def ensure_person_event_columns(conn: sqlite3.Connection) -> None:
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(person_events)").fetchall()}
+    if "follow_up_enabled" not in columns:
+        conn.execute("ALTER TABLE person_events ADD COLUMN follow_up_enabled INTEGER NOT NULL DEFAULT 0")
+    if "follow_up_dates" not in columns:
+        conn.execute("ALTER TABLE person_events ADD COLUMN follow_up_dates TEXT NOT NULL DEFAULT '[]'")
+
+
 def clean_text(value: Any, limit: int | None = None) -> str:
     text = "" if value is None else str(value).strip()
     if limit is not None:
@@ -240,6 +251,23 @@ def clean_date(value: Any) -> str:
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
         raise ValueError("Date must use YYYY-MM-DD format.")
     return text
+
+
+def clean_follow_up_dates(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("Follow-up dates must be a list.")
+    dates: list[str] = []
+    for raw_date in value[:20]:
+        text = clean_text(raw_date)
+        if not text:
+            continue
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+            raise ValueError("Follow-up dates must use YYYY-MM-DD format.")
+        if text not in dates:
+            dates.append(text)
+    return dates
 
 
 def clean_color(value: Any) -> str:
@@ -280,7 +308,7 @@ def domain_from_url(value: Any) -> str:
 
 
 def event_payload(row: sqlite3.Row) -> dict[str, Any]:
-    return {
+    payload = {
         "id": row["id"],
         "name": row["name"],
         "event_date": row["event_date"],
@@ -289,12 +317,25 @@ def event_payload(row: sqlite3.Row) -> dict[str, Any]:
         "created_at": row["created_at"],
         "people_count": row["people_count"] if "people_count" in row.keys() else 0,
     }
+    if "follow_up_enabled" in row.keys():
+        payload["follow_up_enabled"] = bool(row["follow_up_enabled"])
+    if "follow_up_dates" in row.keys():
+        try:
+            dates = json.loads(row["follow_up_dates"] or "[]")
+        except json.JSONDecodeError:
+            dates = []
+        payload["follow_up_dates"] = dates if isinstance(dates, list) else []
+    return payload
 
 
 def fetch_events_for_person(conn: sqlite3.Connection, person_id: str) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT e.id, e.name, e.event_date, e.color, e.position, e.created_at, 0 AS people_count
+        SELECT
+            e.id, e.name, e.event_date, e.color, e.position, e.created_at,
+            0 AS people_count,
+            pe.follow_up_enabled,
+            pe.follow_up_dates
         FROM events e
         JOIN person_events pe ON pe.event_id = e.id
         WHERE pe.person_id = ?
@@ -363,9 +404,19 @@ def set_person_events(conn: sqlite3.Connection, person_id: str, event_ids: list[
         placeholders = ",".join("?" for _ in valid_ids)
         rows = conn.execute(f"SELECT id FROM events WHERE id IN ({placeholders})", valid_ids).fetchall()
         valid_ids = [row["id"] for row in rows]
-    conn.execute("DELETE FROM person_events WHERE person_id = ?", (person_id,))
+    if valid_ids:
+        placeholders = ",".join("?" for _ in valid_ids)
+        conn.execute(
+            f"DELETE FROM person_events WHERE person_id = ? AND event_id NOT IN ({placeholders})",
+            [person_id, *valid_ids],
+        )
+    else:
+        conn.execute("DELETE FROM person_events WHERE person_id = ?", (person_id,))
     conn.executemany(
-        "INSERT OR IGNORE INTO person_events (person_id, event_id) VALUES (?, ?)",
+        """
+        INSERT OR IGNORE INTO person_events (person_id, event_id, follow_up_enabled, follow_up_dates)
+        VALUES (?, ?, 0, '[]')
+        """,
         [(person_id, event_id) for event_id in valid_ids],
     )
 
@@ -493,6 +544,28 @@ def update_person(person_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         except FileNotFoundError:
             pass
     return person
+
+
+def update_person_event_follow_up(person_id: str, event_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    enabled = bool(payload.get("follow_up_enabled"))
+    dates = clean_follow_up_dates(payload.get("follow_up_dates") or [])
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM person_events WHERE person_id = ? AND event_id = ?",
+            (person_id, event_id),
+        ).fetchone()
+        if not row:
+            raise KeyError("Person/event pairing not found.")
+        conn.execute(
+            """
+            UPDATE person_events
+            SET follow_up_enabled = ?, follow_up_dates = ?
+            WHERE person_id = ? AND event_id = ?
+            """,
+            (1 if enabled else 0, json.dumps(dates, ensure_ascii=True), person_id, event_id),
+        )
+        person_row = conn.execute("SELECT * FROM people WHERE id = ?", (person_id,)).fetchone()
+        return person_payload(conn, person_row)
 
 
 def delete_person(person_id: str) -> None:
@@ -965,6 +1038,18 @@ class Handler(BaseHTTPRequestHandler):
             match = re.fullmatch(r"/api/people/([^/]+)", parsed.path)
             if match:
                 self.send_json({"person": update_person(unquote(match.group(1)), request_json(self))})
+                return
+            follow_up_match = re.fullmatch(r"/api/people/([^/]+)/events/([^/]+)/follow-up", parsed.path)
+            if follow_up_match:
+                self.send_json(
+                    {
+                        "person": update_person_event_follow_up(
+                            unquote(follow_up_match.group(1)),
+                            unquote(follow_up_match.group(2)),
+                            request_json(self),
+                        )
+                    }
+                )
                 return
             event_match = re.fullmatch(r"/api/events/([^/]+)", parsed.path)
             if event_match:

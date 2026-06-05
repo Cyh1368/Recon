@@ -22,6 +22,7 @@ const state = {
   eventPeopleExpandedIds: new Set(),
   eventPeopleMessages: {},
   eventPeopleGeneratingId: "",
+  eventPeopleDateDrafts: {},
 };
 
 const els = {
@@ -157,6 +158,15 @@ function selectedEvents(selectedIds) {
 
 function personById(personId) {
   return state.people.find((person) => person.id === personId);
+}
+
+function eventForPerson(person, eventId) {
+  return (person?.events || []).find((event) => event.id === eventId) || {};
+}
+
+function followUpDatesFor(person, eventId) {
+  const dates = eventForPerson(person, eventId).follow_up_dates;
+  return Array.isArray(dates) ? dates : [];
 }
 
 function peopleForEvent(eventId) {
@@ -328,6 +338,10 @@ function renderEventPeopleDialog() {
     const expanded = state.eventPeopleExpandedIds.has(person.id);
     const message = state.eventPeopleMessages[person.id] || "";
     const generating = state.eventPeopleGeneratingId === person.id;
+    const personEvent = eventForPerson(person, event.id);
+    const followUpEnabled = Boolean(personEvent.follow_up_enabled);
+    const followUpDates = followUpDatesFor(person, event.id);
+    const dateDrafts = state.eventPeopleDateDrafts[person.id] || [];
     const name = person.linkedin
       ? `<a class="event-person-name" href="${escapeHtml(person.linkedin)}" target="_blank" rel="noopener noreferrer">${escapeHtml(person.name)}</a>`
       : `<span class="event-person-name">${escapeHtml(person.name)}</span>`;
@@ -342,6 +356,29 @@ function renderEventPeopleDialog() {
         ${expanded ? `
           <div class="event-person-expanded">
             <div class="event-person-description">${escapeHtml(person.description || "No description")}</div>
+            <div class="follow-up-panel">
+              <label class="follow-up-toggle">
+                <input type="checkbox" data-follow-up-toggle data-person-id="${escapeHtml(person.id)}" ${followUpEnabled ? "checked" : ""}>
+                <span>Follow Up?</span>
+              </label>
+              ${followUpEnabled ? `
+                <div class="follow-up-date-list">
+                  ${followUpDates.map((date, index) => `
+                    <div class="follow-up-date-row">
+                      <input type="date" data-follow-up-date data-person-id="${escapeHtml(person.id)}" data-date-index="${index}" value="${escapeHtml(date)}" aria-label="Follow-up date">
+                      <button type="button" class="small-button secondary-button" data-action="remove-follow-up-date" data-person-id="${escapeHtml(person.id)}" data-date-index="${index}">Remove</button>
+                    </div>
+                  `).join("")}
+                  ${dateDrafts.map((_, index) => `
+                    <div class="follow-up-date-row">
+                      <input type="date" data-follow-up-date data-date-draft="true" data-person-id="${escapeHtml(person.id)}" data-date-index="${index}" aria-label="Follow-up date">
+                      <button type="button" class="small-button secondary-button" data-action="remove-follow-up-date-draft" data-person-id="${escapeHtml(person.id)}" data-date-index="${index}">Remove</button>
+                    </div>
+                  `).join("")}
+                </div>
+                <button type="button" class="small-button secondary-button follow-up-add" data-action="add-follow-up-date" data-person-id="${escapeHtml(person.id)}">Add date</button>
+              ` : ""}
+            </div>
             <div class="linkedin-message-actions">
               <button type="button" class="small-button secondary-button" data-action="generate-linkedin-message" data-person-id="${escapeHtml(person.id)}" ${generating ? "disabled" : ""}>
                 ${generating ? "Generating" : message ? "Regenerate LinkedIn message" : "Generate LinkedIn message"}
@@ -934,6 +971,7 @@ function openEventPeopleDialog(eventId) {
   state.eventPeopleExpandedIds.clear();
   state.eventPeopleMessages = {};
   state.eventPeopleGeneratingId = "";
+  state.eventPeopleDateDrafts = {};
   renderEventPeopleDialog();
   if (!els.eventPeopleDialog.open) els.eventPeopleDialog.showModal();
 }
@@ -944,6 +982,7 @@ function closeEventPeopleDialog() {
   state.eventPeopleExpandedIds.clear();
   state.eventPeopleMessages = {};
   state.eventPeopleGeneratingId = "";
+  state.eventPeopleDateDrafts = {};
 }
 
 function toggleEventPeopleRow(personId) {
@@ -995,6 +1034,45 @@ async function generateLinkedInMessage(personId) {
   }
 }
 
+async function updatePersonEventFollowUp(personId, followUpEnabled, followUpDates) {
+  const data = await api(`/api/people/${encodeURIComponent(personId)}/events/${encodeURIComponent(state.eventPeopleEventId)}/follow-up`, {
+    method: "PUT",
+    body: JSON.stringify({
+      follow_up_enabled: followUpEnabled,
+      follow_up_dates: followUpDates,
+    }),
+  });
+  delete state.eventPeopleDateDrafts[personId];
+  upsertPerson(data.person);
+  return data.person;
+}
+
+function addFollowUpDateDraft(personId) {
+  state.eventPeopleDateDrafts = {
+    ...state.eventPeopleDateDrafts,
+    [personId]: [...(state.eventPeopleDateDrafts[personId] || []), ""],
+  };
+  renderEventPeopleDialog();
+}
+
+function removeFollowUpDateDraft(personId, index) {
+  const drafts = [...(state.eventPeopleDateDrafts[personId] || [])];
+  drafts.splice(index, 1);
+  state.eventPeopleDateDrafts = {
+    ...state.eventPeopleDateDrafts,
+    [personId]: drafts,
+  };
+  renderEventPeopleDialog();
+}
+
+async function removeFollowUpDate(personId, index) {
+  const person = personById(personId);
+  const dates = followUpDatesFor(person, state.eventPeopleEventId);
+  const nextDates = dates.filter((_, dateIndex) => dateIndex !== index);
+  await updatePersonEventFollowUp(personId, true, nextDates);
+  setStatus("Follow-up dates updated.");
+}
+
 function handleEventBoardClick(event) {
   const card = event.target.closest(".event-card[data-event-id]");
   if (!card) return;
@@ -1011,6 +1089,18 @@ function handleEventBoardKeydown(event) {
 
 async function handleEventPeopleClick(event) {
   const actionButton = event.target.closest("button[data-action]");
+  if (actionButton?.dataset.action === "add-follow-up-date") {
+    addFollowUpDateDraft(actionButton.dataset.personId);
+    return;
+  }
+  if (actionButton?.dataset.action === "remove-follow-up-date") {
+    await removeFollowUpDate(actionButton.dataset.personId, Number(actionButton.dataset.dateIndex));
+    return;
+  }
+  if (actionButton?.dataset.action === "remove-follow-up-date-draft") {
+    removeFollowUpDateDraft(actionButton.dataset.personId, Number(actionButton.dataset.dateIndex));
+    return;
+  }
   if (actionButton?.dataset.action === "generate-linkedin-message") {
     await generateLinkedInMessage(actionButton.dataset.personId);
     return;
@@ -1030,6 +1120,50 @@ async function handleEventPeopleClick(event) {
   const row = event.target.closest(".event-people-row-main")?.closest(".event-people-row");
   if (!row) return;
   toggleEventPeopleRow(row.dataset.personId);
+}
+
+async function handleEventPeopleChange(event) {
+  const target = event.target;
+  if (target.matches("input[data-follow-up-toggle]")) {
+    const personId = target.dataset.personId;
+    const person = personById(personId);
+    try {
+      await updatePersonEventFollowUp(personId, target.checked, followUpDatesFor(person, state.eventPeopleEventId));
+      setStatus("Follow-up updated.");
+    } catch (error) {
+      setStatus(error.message, true);
+      renderEventPeopleDialog();
+    }
+    return;
+  }
+
+  if (target.matches("input[data-follow-up-date]")) {
+    const personId = target.dataset.personId;
+    const person = personById(personId);
+    const dates = followUpDatesFor(person, state.eventPeopleEventId);
+    const value = target.value;
+    if (target.dataset.dateDraft === "true") {
+      if (!value) return;
+      try {
+        await updatePersonEventFollowUp(personId, true, [...dates, value]);
+        setStatus("Follow-up dates updated.");
+      } catch (error) {
+        setStatus(error.message, true);
+        renderEventPeopleDialog();
+      }
+      return;
+    }
+
+    const index = Number(target.dataset.dateIndex);
+    const nextDates = dates.map((date, dateIndex) => (dateIndex === index ? value : date)).filter(Boolean);
+    try {
+      await updatePersonEventFollowUp(personId, true, nextDates);
+      setStatus("Follow-up dates updated.");
+    } catch (error) {
+      setStatus(error.message, true);
+      renderEventPeopleDialog();
+    }
+  }
 }
 
 async function handleEventsDialogChange(event) {
@@ -1214,8 +1348,10 @@ els.eventPeopleDialog.addEventListener("close", () => {
   state.eventPeopleExpandedIds.clear();
   state.eventPeopleMessages = {};
   state.eventPeopleGeneratingId = "";
+  state.eventPeopleDateDrafts = {};
 });
 els.eventPeopleList.addEventListener("click", handleEventPeopleClick);
+els.eventPeopleList.addEventListener("change", handleEventPeopleChange);
 els.eventOrderList.addEventListener("change", handleEventsDialogChange);
 els.eventOrderList.addEventListener("click", handleEventsDialogClick);
 els.eventOrderList.addEventListener("dragstart", handleEventDragStart);
